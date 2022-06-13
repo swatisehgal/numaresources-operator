@@ -257,7 +257,7 @@ func getFreeResources(RequiredResources corev1.ResourceList, resName corev1.Reso
 
 	switch resName {
 	case corev1.ResourceCPU:
-		cpu := resource.NewQuantity(gapResources.Cpu().Value(), resource.DecimalSI)
+		cpu := resource.NewQuantity(freeResources.Cpu().Value(), resource.DecimalSI)
 		fmt.Printf("Before SubCoreResources: freeResources: %v, baseload.CPU: %v, baseload.Memory:%v\n", freeResources, baseload.CPU, baseload.Memory)
 
 		e2ereslist.SubCoreResources(freeResources, cpu, &resource.Quantity{})
@@ -265,7 +265,7 @@ func getFreeResources(RequiredResources corev1.ResourceList, resName corev1.Reso
 		fmt.Printf("After SubCoreResources: freeResources: %v, baseload.CPU: %v, baseload.Memory:%v\n", freeResources, baseload.CPU, baseload.Memory)
 
 	case corev1.ResourceMemory:
-		mem := resource.NewQuantity(gapResources.Memory().Value(), resource.DecimalSI)
+		mem := resource.NewQuantity(freeResources.Memory().Value(), resource.DecimalSI)
 		fmt.Printf("Before SubCoreResources: freeResources: %v, baseload.CPU: %v, baseload.Memory:%v\n", freeResources, baseload.CPU, baseload.Memory)
 
 		e2ereslist.SubCoreResources(freeResources, &resource.Quantity{}, mem)

@@ -98,6 +98,19 @@ func (nl Load) Deduct(res corev1.ResourceList) {
 	res[corev1.ResourceMemory] = *adjustedMemory
 }
 
+// Add the current node load from the given ResourceList by mutating
+// the parameter in place
+func (nl Load) Add(res corev1.ResourceList) {
+
+	adjustedCPU := res.Cpu()
+	adjustedCPU.Add(nl.CPU)
+	res[corev1.ResourceCPU] = *adjustedCPU
+
+	adjustedMemory := res.Memory()
+	adjustedMemory.Add(nl.Memory)
+	res[corev1.ResourceMemory] = *adjustedMemory
+}
+
 func (nl Load) ToResourceList() corev1.ResourceList {
 	res := make(corev1.ResourceList)
 	nl.Apply(res)
