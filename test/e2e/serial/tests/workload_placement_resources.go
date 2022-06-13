@@ -82,13 +82,13 @@ var _ = Describe("[serial][disruptive][scheduler][byres] numaresources workload 
 		// FIXME: this is a slight abuse of DescribeTable, but we need to run
 		// the same code with a different test_id per tmscope
 		DescribeTable("[tier1][ressched] a guaranteed pod with one container should be placed and aligned on the node",
-			func(tmPolicy nrtv1alpha1.TopologyManagerPolicy, requiredRes, expectedFreeRes corev1.ResourceList) {
+			func(tmPolicy nrtv1alpha1.TopologyManagerPolicy, requiredRes corev1.ResourceList, resName corev1.ResourceName) {
 				nrtCandidates, targetNodeName := setupNodes(fxt, desiredNodesState{
 					NRTList:           nrtList,
 					RequiredNodes:     2,
 					RequiredNUMAZones: 2,
 					RequiredResources: requiredRes,
-					FreeResources:     expectedFreeRes,
+					DecidingResource:  resName,
 				})
 
 				nrts := e2enrt.FilterTopologyManagerPolicy(nrtCandidates, tmPolicy)
@@ -127,19 +127,7 @@ var _ = Describe("[serial][disruptive][scheduler][byres] numaresources workload 
 					corev1.ResourceCPU:    resource.MustParse("16"),
 					corev1.ResourceMemory: resource.MustParse("16Gi"),
 				},
-				// expected free resources on non-target node
-				// so non-target node must obviously have LESS free resources
-				// than the resources required by the test pod.
-				// Here we need to take into account the baseload which is possibly
-				// be accounted all on a NUMA zone (we can't nor we should predict this).
-				// For this test to be effective, a resource need to be LESS than
-				// the request - while all others are enough. "Less" can be any amount,
-				// so we make sure the gap is > of the estimated baseload for that resource.
-				// TODO: automate this computation, avoiding hardcoded values.
-				corev1.ResourceList{
-					corev1.ResourceCPU:    resource.MustParse("16"),
-					corev1.ResourceMemory: resource.MustParse("8Gi"),
-				},
+				corev1.ResourceMemory,
 			),
 		)
 	})
@@ -151,7 +139,7 @@ type desiredNodesState struct {
 	// The following is Per Node
 	RequiredNUMAZones int
 	RequiredResources corev1.ResourceList
-	FreeResources     corev1.ResourceList
+	DecidingResource  corev1.ResourceName
 }
 
 func setupNodes(fxt *e2efixture.Fixture, nodesState desiredNodesState) ([]nrtv1alpha1.NodeResourceTopology, string) {
@@ -188,11 +176,10 @@ func setupNodes(fxt *e2efixture.Fixture, nodesState desiredNodesState) ([]nrtv1a
 
 		baseload, err := nodes.GetLoad(fxt.K8sClient, nodeName)
 		ExpectWithOffset(1, err).ToNot(HaveOccurred(), "missing node load info for %q", nodeName)
-		By(fmt.Sprintf("computed base load: %s", baseload))
+		By(fmt.Sprintf("computed base load for %s: %s\n ", nodeName, baseload))
 
 		for zIdx, zone := range nrtInfo.Zones {
-			padRes := nodesState.FreeResources.DeepCopy()
-
+			padRes := getFreeResources(nodesState.RequiredResources, nodesState.DecidingResource)
 			if zIdx == 0 { // any random zone is actually fine
 				baseload.Apply(padRes)
 			}
@@ -205,7 +192,7 @@ func setupNodes(fxt *e2efixture.Fixture, nodesState desiredNodesState) ([]nrtv1a
 
 	baseload, err := nodes.GetLoad(fxt.K8sClient, targetNodeName)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "missing node load info for %q", targetNodeName)
-	By(fmt.Sprintf("computed base load: %s", baseload))
+	By(fmt.Sprintf("computed base load for %s: %s", targetNodeName, baseload))
 
 	targetNrtInfo, err := e2enrt.FindFromList(nrtCandidates, targetNodeName)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "missing NRT info for target node %q", targetNodeName)
@@ -235,4 +222,31 @@ func createPaddingPod(offset int, fxt *e2efixture.Fixture, podName, nodeName str
 	ExpectWithOffset(offset+1, err).NotTo(HaveOccurred(), "unable to create pod %q on zone %q", podName, zone.Name)
 
 	return padPod
+}
+
+func getFreeResources(RequiredResources corev1.ResourceList, resName corev1.ResourceName) corev1.ResourceList {
+	freeResources := RequiredResources.DeepCopy()
+
+	// This is to evaluate expected free resources on non-target node
+	// so non-target node must obviously have LESS free resources
+	// than the resources required by the test pod.Free resource need
+	// to be LESS than the request for resName - while all others are
+	// enough. "Less" can be any amount, so we using a value half of
+	// the required resource.
+
+	cpuVal := freeResources.Cpu().Value() / 2 // This is a way to ensure that cpuVal < RequiredResources.Cpu().Value()
+	ExpectWithOffset(1, cpuVal).To(BeNumerically("<", RequiredResources.Cpu().Value()), "free CPU not less than required CPU")
+
+	memVal := freeResources.Memory().Value() / 2 // This is a way to ensure that memVal < RequiredResources.Memory().Value()
+	ExpectWithOffset(1, memVal).To(BeNumerically("<", RequiredResources.Memory().Value()), "free memory not less than required m	emory")
+
+	switch resName {
+	case corev1.ResourceCPU:
+		cpu := resource.NewQuantity(cpuVal, resource.DecimalSI)
+		e2ereslist.SubCoreResources(freeResources, cpu, &resource.Quantity{})
+	case corev1.ResourceMemory:
+		mem := resource.NewQuantity(memVal, resource.DecimalSI)
+		e2ereslist.SubCoreResources(freeResources, &resource.Quantity{}, mem)
+	}
+	return freeResources
 }

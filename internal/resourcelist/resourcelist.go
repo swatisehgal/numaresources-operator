@@ -65,6 +65,16 @@ func AddCoreResources(res corev1.ResourceList, cpu, mem resource.Quantity) {
 	res[corev1.ResourceMemory] = *adjustedMemory
 }
 
+func SubCoreResources(res corev1.ResourceList, cpu, mem *resource.Quantity) {
+	adjustedCPU := res.Cpu()
+	adjustedCPU.Sub(*cpu)
+	res[corev1.ResourceCPU] = *adjustedCPU
+
+	adjustedMemory := res.Memory()
+	adjustedMemory.Sub(*mem)
+	res[corev1.ResourceMemory] = *adjustedMemory
+}
+
 func RoundUpCoreResources(cpu, mem resource.Quantity) (resource.Quantity, resource.Quantity) {
 	retCpu := *resource.NewQuantity(roundUp(cpu.Value(), 2), resource.DecimalSI)
 	retMem := mem.DeepCopy() // TODO: this is out of over caution
