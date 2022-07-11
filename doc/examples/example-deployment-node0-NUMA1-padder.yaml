@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tesdeployment-padder-node0-numa1
+  labels:
+    app: test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test
+  template:
+    metadata:
+      labels:
+        app: test
+    spec:
+      nodeSelector:
+        kubernetes.io/hostname: node0.examaple.com
+      schedulerName: topo-aware-scheduler
+      containers:
+      - name: ctnr
+        image: quay.io/fromani/numalign
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: [ "while true; do numalign; sleep 100000; done;" ]
+        resources:
+          limits:
+            memory: "100Mi"
+            cpu: "34"
+          requests:
+            memory: "100Mi"
+            cpu: "34"

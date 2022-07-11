@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tesdeployment
+  labels:
+    app: test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test
+  template:
+    metadata:
+      labels:
+        app: test
+    spec:
+      schedulerName: topo-aware-scheduler
+      containers:
+      - name: ctnr
+        image: quay.io/fromani/numalign
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: [ "while true; do numalign; sleep 100000; done;" ]
+        resources:
+          limits:
+            memory: "100Mi"
+            cpu: "10"
+          requests:
+            memory: "100Mi"
+            cpu: "10"
+      - name: ctnr2
+        image: quay.io/fromani/numalign
+        imagePullPolicy: IfNotPresent
+        command: ["/bin/sh", "-c"]
+        args: [ "while true; do numalign; sleep 100000; done;" ]
+        resources:
+          limits:
+            memory: "100Mi"
+            cpu: "8"
+          requests:
+            memory: "100Mi"
+            cpu: "8"
