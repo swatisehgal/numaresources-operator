@@ -1,0 +1,159 @@
+From: NRO TLS PQC <noreply@openshift-kni>
+Subject: [PATCH] metrics: add optional TLS profile (min version, cipher suites)
+
+Allow deployers (e.g. NRO on OpenShift) to pass cluster TLS profile
+via flags or config so the metrics server does not rely on Go defaults.
+When not set, behavior is unchanged (backward compatible).
+
+Apply to: github.com/k8stopologyawareschedwg/resource-topology-exporter
+
+---
+ pkg/config/cfgdispatch.go   |  2 +
+ pkg/config/flags.go         |  4 ++
+ pkg/metrics/server/setup.go | 95 ++++++++++++++++++++++++++++++++++++++++------
+ 3 files changed, 91 insertions(+), 10 deletions(-)
+
+diff --git a/pkg/config/cfgdispatch.go b/pkg/config/cfgdispatch.go
+--- a/pkg/config/cfgdispatch.go
++++ b/pkg/config/cfgdispatch.go
+@@ -125,6 +125,8 @@ func (cm *ConfigManager) UpdateFromConfigMap(pArgs *config.ProgArgs) error {
+ 		{key: "topologyExporter.metricsTLS.certsDir", out: &pArgs.RTE.MetricsTLSCfg.CertsDir},
+ 		{key: "topologyExporter.metricsTLS.certFile", out: &pArgs.RTE.MetricsTLSCfg.CertFile},
+ 		{key: "topologyExporter.metricsTLS.keyFile", out: &pArgs.RTE.MetricsTLSCfg.KeyFile},
++		{key: "topologyExporter.metricsTLS.minTLSVersion", out: &pArgs.RTE.MetricsTLSCfg.MinTLSVersion},
++		{key: "topologyExporter.metricsTLS.cipherSuites", out: &pArgs.RTE.MetricsTLSCfg.CipherSuites},
+ 		{key: "topologyExporter.metricsTLS.wantCliAuth", out: &pArgs.RTE.MetricsTLSCfg.WantCliAuth},
+ 	}
+ 
+diff --git a/pkg/config/flags.go b/pkg/config/flags.go
+--- a/pkg/config/flags.go
++++ b/pkg/config/flags.go
+@@ -73,6 +73,10 @@ func FromFlags(pArgs *ProgArgs, args ...string) (string, string, error) {
+ 	CommandLine.StringVar(&pArgs.RTE.MetricsTLSCfg.CertsDir, "metrics-certs-dir", pArgs.RTE.MetricsTLSCfg.CertsDir, "certificates directory for TLS metrics serving")
+ 	CommandLine.StringVar(&pArgs.RTE.MetricsTLSCfg.CertFile, "metrics-cert-file", pArgs.RTE.MetricsTLSCfg.CertFile, "certificate file name for TLS metrics serving")
+ 	CommandLine.StringVar(&pArgs.RTE.MetricsTLSCfg.KeyFile, "metrics-key-file", pArgs.RTE.MetricsTLSCfg.KeyFile, "key file name for TLS metrics serving")
++	CommandLine.StringVar(&pArgs.RTE.MetricsTLSCfg.MinTLSVersion, "metrics-tls-min-version", pArgs.RTE.MetricsTLSCfg.MinTLSVersion, "minimum TLS version for metrics (e.g. VersionTLS12). Empty = Go default.")
++	CommandLine.StringVar(&pArgs.RTE.MetricsTLSCfg.CipherSuites, "metrics-tls-cipher-suites", pArgs.RTE.MetricsTLSCfg.CipherSuites, "comma-separated list of TLS cipher suite names (IANA). Empty = Go default.")
+ 	CommandLine.BoolVar(&pArgs.RTE.MetricsTLSCfg.WantCliAuth, "metrics-want-cli-auth", pArgs.RTE.MetricsTLSCfg.WantCliAuth, "Toggle if client certificate and authentication is required")
+ 
+ 	CommandLine.StringVar(&refCnt, "reference-container", pArgs.RTE.ReferenceContainer.String(), "Reference container, used to learn about the shared cpu pool\n See: https://github.com/kubernetes/kubernetes/issues/102190\n format of spec is namespace/podname/containername.\n Alternatively, you can use the env vars REFERENCE_NAMESPACE, REFERENCE_POD_NAME, REFERENCE_CONTAINER_NAME.")
+diff --git a/pkg/metrics/server/setup.go b/pkg/metrics/server/setup.go
+--- a/pkg/metrics/server/setup.go
++++ b/pkg/metrics/server/setup.go
+@@ -54,9 +54,14 @@ func NewDefaultTLSConfig() TLSConfig {
+ }
+ 
+ type TLSConfig struct {
+-	CertsDir    string `json:"certsDir,omitempty"`
+-	CertFile    string `json:"certFile,omitempty"`
+-	KeyFile     string `json:"keyFile,omitempty"`
+-	WantCliAuth bool   `json:"wantCliAuth,omitempty"`
++	CertsDir       string `json:"certsDir,omitempty"`
++	CertFile       string `json:"certFile,omitempty"`
++	KeyFile        string `json:"keyFile,omitempty"`
++	WantCliAuth    bool   `json:"wantCliAuth,omitempty"`
++	MinTLSVersion  string `json:"minTLSVersion,omitempty"`
++	CipherSuites   string `json:"cipherSuites,omitempty"`
+ }
+ 
+ type Config struct {
+@@ -79,8 +84,10 @@ func (conf TLSConfig) Clone() TLSConfig {
+ 	return TLSConfig{
+ 		CertsDir: conf.CertsDir,
+ 		CertFile: conf.CertFile,
+ 		KeyFile:  conf.KeyFile,
++		WantCliAuth:   conf.WantCliAuth,
++		MinTLSVersion: conf.MinTLSVersion,
++		CipherSuites:  conf.CipherSuites,
+ 	}
+ }
+ 
+@@ -161,9 +168,7 @@ func Setup(mode string, conf Config) error {
+ 	opts := ctrlmetricssrv.Options{
+ 		SecureServing: secureServing,
+ 		BindAddress:   conf.BindAddress(),
+ 		CertDir:       conf.TLS.CertsDir,
+ 		CertName:      conf.TLS.CertFile,
+ 		KeyName:       conf.TLS.KeyFile,
+-		TLSOpts: []func(*tls.Config){
+-			WithClientAuth(conf.TLS.WantCliAuth),
+-		},
++		TLSOpts:       buildTLSOpts(conf.TLS),
+ 	}
+ 	srv, err := ctrlmetricssrv.NewServer(opts, nil, nil)
+ 	if err != nil {
+@@ -186,6 +191,76 @@ func Setup(mode string, conf Config) error {
+ 	return nil
+ }
+ 
++func buildTLSOpts(tlsConf TLSConfig) []func(*tls.Config) {
++	opts := []func(*tls.Config){
++		WithClientAuth(tlsConf.WantCliAuth),
++	}
++	if tlsOpt := tlsProfileOpt(tlsConf.MinTLSVersion, tlsConf.CipherSuites); tlsOpt != nil {
++		opts = append(opts, tlsOpt)
++	}
++	return opts
++}
++
++func tlsProfileOpt(minVersion, cipherSuitesStr string) func(*tls.Config) {
++	minVer := parseTLSVersion(minVersion)
++	if minVer == 0 && cipherSuitesStr == "" {
++		return nil
++	}
++	var cipherSuites []uint16
++	if cipherSuitesStr != "" {
++		names := strings.Split(cipherSuitesStr, ",")
++		for i := range names {
++			names[i] = strings.TrimSpace(names[i])
++		}
++		cipherSuites = cipherSuiteIDs(names)
++	}
++	return func(c *tls.Config) {
++		if minVer != 0 {
++			c.MinVersion = minVer
++		}
++		if len(cipherSuites) > 0 && minVer != tls.VersionTLS13 {
++			c.CipherSuites = cipherSuites
++		}
++	}
++}
++
++func parseTLSVersion(s string) uint16 {
++	switch strings.TrimSpace(s) {
++	case "VersionTLS10", "TLS1.0":
++		return tls.VersionTLS10
++	case "VersionTLS11", "TLS1.1":
++		return tls.VersionTLS11
++	case "VersionTLS12", "TLS1.2":
++		return tls.VersionTLS12
++	case "VersionTLS13", "TLS1.3":
++		return tls.VersionTLS13
++	default:
++		return 0
++	}
++}
++
++var cipherSuiteByName map[string]uint16
++
++func init() {
++	cipherSuiteByName = make(map[string]uint16)
++	for _, cs := range tls.CipherSuites() {
++		cipherSuiteByName[cs.Name] = cs.ID
++	}
++}
++
++func cipherSuiteIDs(names []string) []uint16 {
++	var ids []uint16
++	for _, name := range names {
++		name = strings.TrimSpace(name)
++		if id, ok := cipherSuiteByName[name]; ok {
++			ids = append(ids, id)
++		}
++	}
++	return ids
++}
++
+ func WithClientAuth(cliAuth bool) func(tlscfg *tls.Config) {
+ 	return func(tlscfg *tls.Config) {
+ 		if !cliAuth {

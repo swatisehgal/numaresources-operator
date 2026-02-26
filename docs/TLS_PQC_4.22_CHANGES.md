@@ -1,6 +1,6 @@
 # TLS Consistency & PQC Readiness for OCP 4.22 – NRO Change Analysis
 
-This document summarizes the **OCP 4.22 TLS/PQC initiative** requirements and the **changes needed** in the numaresources-operator (NRO) repository.
+This document summarizes the **OCP 4.22 TLS/PQC initiative** requirements and the **changes needed** in the numaresources-operator (NRO) repository. It aligns with the official **TLS Profile Compliance Remediation Guidance** and FAQ (signoff: Joe Lanford, Mrunal Patel, JP Jung, Lance Bragstad, Nicholas Richardson, James Stallings, Shaun Smith).
 
 ---
 
@@ -57,6 +57,8 @@ So the only operand TLS server in scope is **RTE’s metrics HTTPS server**. Tod
 
 **Objective:** Both servers must use TLS settings derived from **API Server** `tlsSecurityProfile` (cluster profile), not Go defaults.
 
+**Preferred approach:** Use the shared package **[openshift/controller-runtime-common/pkg/tls](https://github.com/openshift/controller-runtime-common/tree/main/pkg/tls)**. It provides `FetchAPIServerTLSProfile`, `NewTLSConfigFromProfile` (for controller-runtime TLSOpts), and `SecurityProfileWatcher` (to trigger graceful restart when the cluster TLS profile changes). See [cluster-machine-approver PR #286](https://github.com/openshift/cluster-machine-approver/pull/286) for the exact pattern (client before manager, TLSOpts for webhook/metrics, watcher with `OnProfileChange: cancel`). The steps below align with what that package does; do not reimplement profile resolution or cipher mapping in NRO.
+
 1. **Read cluster TLS profile at startup**
    - Before creating the controller manager, get the API Server config:
      - Resource: `config.openshift.io/v1`, `APIServer`, name **`cluster`**.
@@ -98,24 +100,28 @@ So the only operand TLS server in scope is **RTE’s metrics HTTPS server**. Tod
 - **Option C – Document and track**
   - If RTE cannot yet honor the cluster profile, document the gap and track (e.g. Jira) until RTE supports it; NRO would still be required to fix **operator** TLS (webhook + metrics) as above.
 
-Recommendation: Align with the RTE owners and OCP TLS/PQC guidance; implement Option A if RTE can accept profile parameters, so NRO explicitly passes the cluster profile to the operand.
+**Upstream-friendly path (recommended):** RTE accepts an **optional generic** TLS profile (min version + cipher list, and later curves) via flags or config—no OpenShift API in RTE. When deployed on OpenShift, NRO reads the API Server profile, converts to that format, and injects it (e.g. container args or ConfigMap). RTE remains deployable on vanilla Kubernetes; compliance is achieved on OpenShift via NRO.
+
+**Upstream-friendly recommendation:** RTE adds optional, platform-agnostic TLS profile input (flags/config); NRO injects the cluster profile when deploying on OpenShift. See **[TLS_PQC_RTE_UPSTREAM_FRIENDLY.md](./TLS_PQC_RTE_UPSTREAM_FRIENDLY.md)** for the full contract and division of responsibility (RTE: generic profile in; NRO: API Server profile → RTE format).
 
 ### 3.3 CSV and feature flag
 
 - In **bundle/manifests/numaresources-operator.clusterserviceversion.yaml** (and any other CSVs that declare the feature):
   - Change `features.operators.openshift.io/tls-profiles: "false"` to **`"true"`** once the operator (and, if applicable, RTE) honor the cluster TLS profile.
 
-### 3.4 Optional: library-go
+### 3.4 Recommended: library-go (official guidance)
 
-- Many OpenShift operators use **library-go** for:
-  - **Config observer** that watches `apiservers.config.openshift.io/cluster` and exposes the TLS profile.
-  - **Crypto helpers** that turn `configv1.TLSSecurityProfile` into `*tls.Config` (including cipher name → ID mapping and curve handling).
-- This repo does **not** currently depend on library-go. You can:
-  - **Option 1:** Add `library-go` and use its observer + crypto helpers (reduces custom code and stays aligned with other OCP operators).
-  - **Option 2:** Keep no dependency on library-go and implement:
-    - One-time (or cached) read of APIServer `cluster` and conversion from `TLSSecurityProfile` to `*tls.Config` in this repo.
+Per the **TLS Profile Compliance Remediation Guidance**:
 
-Both are acceptable as long as the operator **does not** hardcode TLS and **does** apply the cluster profile to webhook and metrics (and to RTE if Option A is chosen).
+- **Most OpenShift operators** should use the **library-go configobserver pattern** (recommended approach). This is the standard pattern across the platform.
+- **library-go** provides:
+  - **`ObserveTLSSecurityProfile`** (apiserver config observer): observes API Server TLS profile via `APIServerLister().Get("cluster")`, converts OpenSSL cipher names to IANA (for ServingInfo), sets `servingInfo.minTLSVersion` and `servingInfo.cipherSuites`. See `library-go/pkg/operator/configobserver/apiserver`.
+  - **Curve preferences** will be added once **openshift/api#2583** is merged and library-go is updated.
+- **NRO today**: Does **not** use library-go; it uses controller-runtime with **direct `crypto/tls.Config`** (webhook + metrics servers). So the guidance path is:
+  - **Option 1 (recommended):** Add **library-go** and use the apiserver config observer; then convert the observed config (minTLSVersion, cipherSuites, and curves when available) into `*tls.Config` for webhook/metrics via library-go crypto utilities where applicable.
+  - **Option 2:** If not using the full configobserver pattern, use **direct Go application code** approach: fetch `TLSSecurityProfile` from API Server, extract profile spec (built-in vs custom), convert **OpenSSL-style cipher names** (and curve names when available) to **Go `crypto/tls` constants**, and set all TLS config explicitly—do not rely on Go defaults. Note: OpenShift profiles use OpenSSL-style names (e.g. `ECDHE-RSA-AES128-GCM-SHA256`); Go requires numeric/constant IDs (e.g. `tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256`).
+
+**Hardcoding "TLS 1.3" is not acceptable;** the component must remain compliant as the central policy is updated without code change.
 
 ### 3.5 OCP 4.22 Tech Preview (TLSAdherence / TLSCurvePreferences)
 
@@ -157,12 +163,88 @@ Both are acceptable as long as the operator **does not** hardcode TLS and **does
 
 ---
 
-## 6. References (from your context)
+## 6. Official remediation steps (alignment)
+
+The guidance defines three steps; NRO mapping:
+
+| Step | Guidance | NRO action |
+|------|----------|------------|
+| **1. Identify the source** | Find where TLS is set: app code, deps, config, env, underlying components (haproxy, openssl, etc.). | **Done:** TLS is in app code—webhook and metrics use controller-runtime TLS; RTE uses its own TLS in the binary. Ensure profile is passed to **all** layers (no underlying proxy without profile). |
+| **2. Update the configuration** | Remove hardcoding; fetch from API Server (default). Operators: library-go configobserver; direct Go: fetch profile, convert OpenSSL→Go constants, set all settings explicitly. | Implement Section 3 (operator webhook/metrics + RTE). Use library-go or direct fetch + conversion; add curves when openshift/api#2583 is merged. |
+| **3. Verify compliance** | Network: **tls-scanner**; code: **semgrep** rules; functional: start, accept permitted, reject non-compliant, respond to profile changes. | Run tls-scanner on operator and RTE endpoints; run HPCASE semgrep rules; add functional tests. |
+
+---
+
+## 7. Next steps (actionable)
+
+Follow this order, aligned with the FAQ timeline and remediation guidance.
+
+### Phase 1: OCP 4.22 – mandatory (release blocker)
+
+1. **ML-KEM (mandatory)**  
+   - **Test:** "Does the TLS server negotiate TLS 1.3 with ML-KEM if the client supports it?" (even with Intermediate profile).  
+   - **Report:** Add/link your component Jira to **OCPSTRAT-2361** (PQC Testing - OCP Core & Platform Aligned Operators). Must pass for 4.22 GA.
+
+2. **TLS profile for operator (webhook + metrics)**  
+   - Implement Section 3.1: fetch API Server TLS profile (default source), convert to `*tls.Config` (MinVersion, CipherSuites; no reliance on Go defaults), pass via TLSOpts to webhook and metrics.  
+   - Prefer **library-go** configobserver + crypto if you add the dependency; otherwise direct fetch + OpenSSL→Go cipher/curve conversion.  
+   - Add RBAC for `apiservers.config.openshift.io` (get/list/watch as needed).
+
+3. **Verification**  
+   - **tls-scanner:** Run against operator metrics and webhook endpoints; confirm only permitted profile is accepted.  
+   - **Semgrep:** Run HPCASE Argus Observe rules; fix any real violations (ignore false positives).  
+   - **Functional:** Component starts, accepts permitted clients, rejects non-compliant, and (if you support dynamic updates) responds to profile changes.
+
+### Phase 2: OCP 4.22 – Tech Preview (once APIs merge)
+
+4. **TLSAdherence (Tech Preview)**  
+   - Wait for API merge for tlsAdherence (track HPCASE-180 / OCPSTRAT-2916).  
+   - Implement and test with **tlsAdherence: Strict**.
+
+5. **TLSCurvePreferences (Tech Preview)**  
+   - Wait for **openshift/api#2583** (merge support for TLS curves in OpenShift API) and library-go updates.  
+   - Add **curve preferences** to your TLS helper and apply to webhook, metrics (and RTE if applicable).  
+   - Verify curves are respected (tls-scanner / functional tests).
+
+6. **Operands (RTE)**  
+   - Align with RTE owners: either RTE accepts profile from NRO (ConfigMap/env/args) or RTE reads cluster profile itself.  
+   - Ensure RTE DaemonSet is reconciled when API Server TLS config changes if NRO passes profile.  
+   - Run tls-scanner on RTE metrics endpoint.
+
+7. **Scheduler (deployer)**  
+   - Ensure the scheduler Deployment (when deployed by NRO) receives cluster TLS profile (e.g. `--tls-min-version`, `--tls-cipher-suites`) from API Server; see [TLS_PQC_4.22_SCHEDULER_PLUGINS_ANALYSIS.md](./TLS_PQC_4.22_SCHEDULER_PLUGINS_ANALYSIS.md).
+
+8. **CSV**  
+   - Set `features.operators.openshift.io/tls-profiles: "true"` when operator (and operands) honor cluster TLS profile.
+
+### Phase 3: OCP 5.0 – GA
+
+9. **TLSAdherence & TLSCurvePreferences GA**  
+   - Both feature gates GA in 5.0; components must honor cluster TLS profile with tlsAdherence: Strict.  
+   - Missing components get Critical bugs, backported to 5.0.
+
+### If you miss 4.22 GA for Tech Preview
+
+- Use **OCP Exception Jira process**: clone **OCPEXCEPT-50**, keep `[TLS_1.3-PQC]` header, specify feature gate (TLSAdherence / TLSCurvePreferences), reason, and **remediation time** (4.22 zStream acceptable; 5.0 is not). If approved, complete and move to Done.
+
+### Contacts and resources
+
+- **Forum:** **#forum-ocp-tls-strict-obedience** (questions, updates).  
+- **Contacts:** JP Jung, Mrunal Patel, Lance Bragstad, Joe Lanford, Shaun Smith, Nicholas Richardson.  
+- **Tools:** HPCASE **tls-scanner** (network verification); **Argus Observe / semgrep** rules (code-level).  
+- **Docs:** [TLS Security Profiles - OCP](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/security_and_compliance/tls-security-profiles); Code Examples tab in the remediation guidance.
+
+---
+
+## 8. References (from your context)
 
 - **OCPSTRAT-2611** – Centralized & enforced TLS configuration (Core & layered).
 - **OCPSTRAT-2361** – PQC testing (report ML-KEM results here).
 - **OCPSTRAT-2916** – [APIserver] API changes for TLS consistency.
 - **HPCASE-180** – tlsAdherence API (Tech Preview); **HPCASE-88** – CASE epic.
+- **openshift/api#2583** – Merge support for TLS curves in OpenShift API.
+- **library-go** – `pkg/operator/configobserver/apiserver` (ObserveTLSSecurityProfile); crypto helpers for TLS.
+- **TLS Profile Compliance Remediation Guidance** – resolution steps, code examples, tools (tls-scanner, semgrep).
 - **FAQ and technical implementation guidelines** – for resolution steps, code samples, and API details.
 - **#forum-ocp-tls-strict-obedience** – for questions and updates.
 
