@@ -18,6 +18,7 @@ package merge
 
 import (
 	"errors"
+	"reflect"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -146,7 +147,17 @@ func Labels(current, updated client.Object) (client.Object, error) {
 }
 
 func isSameKind(a, b client.Object) bool {
-	return a.GetObjectKind().GroupVersionKind().Kind == b.GetObjectKind().GroupVersionKind().Kind
+	kindA := a.GetObjectKind().GroupVersionKind().Kind
+	kindB := b.GetObjectKind().GroupVersionKind().Kind
+	if kindA == kindB {
+		return true
+	}
+	// When GVK is not set on one object (e.g. from fake client or decoder), fall back to runtime type
+	// so merge still works when both are the same concrete type (e.g. *corev1.ServiceAccount).
+	if kindA != "" && kindB != "" {
+		return false
+	}
+	return reflect.TypeOf(a) == reflect.TypeOf(b)
 }
 
 func preserveServiceAccountPullSecrets(original, mutated *corev1.ServiceAccount) {
