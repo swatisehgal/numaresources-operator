@@ -44,6 +44,8 @@ func TestFromClient(t *testing.T) {
 			Name:      "mycfg",
 			Namespace: "ns",
 		},
+		Data:       map[string]string{},
+		BinaryData: map[string][]byte{},
 	}
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithRuntimeObjects(&cm).Build()
@@ -54,8 +56,21 @@ func TestFromClient(t *testing.T) {
 		return
 	}
 
-	if !reflect.DeepEqual(mf.Existing.Config, &cm) {
-		t.Errorf("mismatching configs expected %v, got %v", cm, mf.Existing.Config)
+	// Compare only the fields that matter; fake client can set metadata and nil vs empty map
+	got := mf.Existing.Config
+	if got.Name != cm.Name || got.Namespace != cm.Namespace {
+		t.Errorf("mismatching name/namespace expected %s/%s, got %s/%s", cm.Namespace, cm.Name, got.Namespace, got.Name)
+	}
+	// Treat nil and empty map as equal (fake client may return nil for omitempty fields)
+	if len(got.Data) != 0 || len(cm.Data) != 0 {
+		if !reflect.DeepEqual(got.Data, cm.Data) {
+			t.Errorf("mismatching Data expected %v, got %v", cm.Data, got.Data)
+		}
+	}
+	if len(got.BinaryData) != 0 || len(cm.BinaryData) != 0 {
+		if !reflect.DeepEqual(got.BinaryData, cm.BinaryData) {
+			t.Errorf("mismatching BinaryData expected %v, got %v", cm.BinaryData, got.BinaryData)
+		}
 	}
 
 	mf = FromClient(context.TODO(), fakeClient, "ns", "not-found")
