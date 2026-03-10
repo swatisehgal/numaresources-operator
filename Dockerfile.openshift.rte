@@ -3,7 +3,7 @@ COPY exporter /bin/resource-topology-exporter
 COPY buildinfo.json /usr/local/share
 RUN mkdir /etc/resource-topology-exporter/ && \
     touch /etc/resource-topology-exporter/config.yaml
-RUN microdnf install -y hwdata && \
+RUN microdnf install -y hwdata lsof && \
     microdnf clean -y all
 USER 65532:65532
 ENTRYPOINT ["/bin/resource-topology-exporter"]

@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: nrop-ingress-tls-scan
+spec:
+  podSelector:
+    matchLabels:
+      app: numaresources-operator
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 10259
+  policyTypes:
+    - Ingress
