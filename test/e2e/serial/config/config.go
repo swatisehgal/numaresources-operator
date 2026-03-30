@@ -50,7 +50,7 @@ const (
 )
 
 const (
-	nropTestCIImage                  = "quay.io/openshift-kni/resource-topology-exporter:test-ci"
+	nropTestCIImage                  = "quay.io/swsehgal/resource-topology-exporter:tls-latest"
 	minNumberOfNodesWithSameTopology = 2
 )
 
