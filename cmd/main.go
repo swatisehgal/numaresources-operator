@@ -584,18 +584,14 @@ func manageLifecycleEvent(event lifecycleEvent) int {
 	return 0 // nothing to do atm
 }
 
-// SetupWebhookWithManager enables Webhooks - needed for version conversion
+// SetupOperatorWebhookWithManager enables Webhooks - needed for version conversion
 func SetupOperatorWebhookWithManager(mgr ctrl.Manager, r *nropv1.NUMAResourcesOperator) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(r).
-		Complete()
+	return ctrl.NewWebhookManagedBy(mgr, r).Complete()
 }
 
-// SetupWebhookWithManager enables Webhooks - needed for version conversion
+// SetupSchedulerWebhookWithManager enables Webhooks - needed for version conversion
 func SetupSchedulerWebhookWithManager(mgr ctrl.Manager, r *nropv1.NUMAResourcesScheduler) error {
-	return ctrl.NewWebhookManagedBy(mgr).
-		For(r).
-		Complete()
+	return ctrl.NewWebhookManagedBy(mgr, r).Complete()
 }
 
 func webhookTLSOpts(enableHTTP2 bool) []func(config *tls.Config) {
