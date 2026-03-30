@@ -13,7 +13,7 @@ require (
 	github.com/k8stopologyawareschedwg/deployer v0.23.0
 	github.com/k8stopologyawareschedwg/noderesourcetopology-api v0.1.2
 	github.com/k8stopologyawareschedwg/podfingerprint v0.2.3
-	github.com/k8stopologyawareschedwg/resource-topology-exporter v0.23.1-0.20260326121828-b1ae87c8617e
+	github.com/k8stopologyawareschedwg/resource-topology-exporter v0.24.0
 	github.com/mdomke/git-semver v1.0.0
 	github.com/onsi/ginkgo/v2 v2.28.1
 	github.com/onsi/gomega v1.39.1
@@ -36,7 +36,7 @@ require (
 	k8s.io/kubectl v0.35.3
 	k8s.io/kubelet v0.35.3
 	k8s.io/utils v0.0.0-20260108192941-914a6e750570
-	sigs.k8s.io/controller-runtime v0.22.5
+	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
 )
 
